@@ -28,8 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deployment_version: ${{ steps.tagging.outputs.new_tag }}
-      codescan_status: ${{ steps.codescan.outcome }}
-      codescan_json: ${{ steps.parse_codescan.outputs.codescan_json }}
     steps:
     - name: Post to a Slack channel
       id: slack_build_init
@@ -77,6 +75,14 @@ jobs:
         DEFAULT_BUMP: patch
         WITH_V: true
         PRERELEASE_SUFFIX: beta
+    - name: Get Git metadata
+      id: git-info
+      run: |
+        echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        echo "commit_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "repository_url=https://github.com/${{ github.repository }}.git" >> $GITHUB_OUTPUT
+        echo "branch_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+        echo "git_tag=${{ steps.tagging.outputs.new_tag }}" >> $GITHUB_OUTPUT
     - name: Get ECR Login & Save Login into State
       id: get_ecr_login
       run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT
@@ -95,7 +101,9 @@ jobs:
         -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
         -Djib.to.auth.username=AWS \
         -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-        -Djib.to.tags=${{ steps.tagging.outputs.new_tag }}
+        -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
+        -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ steps.git-info.outputs.repository_url }},DD_GIT_TAG=${{ steps.git-info.outputs.git_tag }},DD_VERSION=${{ steps.git-info.outputs.commit_short }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
+        -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ steps.git-info.outputs.repository_url }},git.tag=${{ steps.git-info.outputs.git_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     - name: ECR Push Vaadin
       if: ${{ inputs.vaadin }}
       id: push_with_vaadin

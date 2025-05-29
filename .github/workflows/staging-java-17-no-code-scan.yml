@@ -53,6 +53,30 @@ jobs:
         distribution: 'zulu'
         java-version: '17'
         cache: 'maven'
+    - name: Debug Git Context
+      run: |
+        echo "=== GitHub Context ==="
+        echo "Event name: ${{ github.event_name }}"
+        echo "Repository: ${{ github.repository }}"
+        echo "SHA: ${{ github.sha }}"
+        echo "Ref: ${{ github.ref }}"
+        echo "Head ref: ${{ github.head_ref }}"
+        echo "Base ref: ${{ github.base_ref }}"
+        echo ""
+        echo "=== Git Status ==="
+        git status
+        echo ""
+        echo "=== Current Branch ==="
+        git branch --show-current
+        echo ""
+        echo "=== Current SHA ==="
+        git rev-parse HEAD
+        echo ""
+        echo "=== Branches containing this commit ==="
+        git branch -a --contains $(git rev-parse HEAD) || echo "No branches contain this commit"
+        echo ""
+        echo "=== Remote branches ==="
+        git branch -r
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:

@@ -76,14 +76,6 @@ jobs:
         DEFAULT_BUMP: patch
         WITH_V: true
         PRERELEASE_SUFFIX: beta
-    - name: Get Git metadata
-      id: git-info
-      run: |
-        echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-        echo "commit_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-        echo "repository_url=https://github.com/${{ github.repository }}.git" >> $GITHUB_OUTPUT
-        echo "branch_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-        echo "git_tag=${{ steps.tagging.outputs.new_tag }}" >> $GITHUB_OUTPUT
     - name: Get ECR Login & Save Login into State
       id: get_ecr_login
       run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT

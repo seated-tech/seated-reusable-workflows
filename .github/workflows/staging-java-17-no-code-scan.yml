@@ -1,0 +1,214 @@
+name: Staging CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      vaadin:
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      AWS_ACCOUNT_ID:
+        required: true
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      GH_USERNAME:
+        required: true
+      GH_TOKEN:
+        required: true
+      SEATED_AWS_PRIMARY_REGION:
+        required: true
+      SEATED_AWS_SECONDARY_REGION:
+        required: true
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_version: ${{ steps.tagging.outputs.new_tag }}
+      codescan_status: ${{ steps.codescan.outcome }}
+      codescan_json: ${{ steps.parse_codescan.outputs.codescan_json }}
+    steps:
+    - name: Post to a Slack channel
+      id: slack_build_init
+      uses: fjogeleit/http-request-action@v1
+      with:
+        url: "https://cyberdog.seatedapp.io/build/init"
+        method: "POST"
+        data: '{"repository": "${{ github.event.repository.name }}", "user": "${{ github.actor }}", "environment": "STAGING", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}"}'
+        preventFailureOnNoResponse: "true"
+        customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: '0'
+    - name: Set up Node.js 16
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+        cache: 'maven'
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.SEATED_AWS_PRIMARY_REGION }}
+    - name: Unit Test
+      id: test
+      env:
+        GITHUB_USERNAME: ${{ secrets.GH_USERNAME }}
+        GITHUB_USER_TOKEN: ${{ secrets.GH_TOKEN }}
+        ENVIRONMENT_ID: staging
+      run: mvn --settings settings.xml test
+    # Staging tag will be generated when commit is pushed to master, X.Y.Z-beta
+    - name: Tagging
+      id: tagging
+      uses: anothrNick/github-tag-action@1.36.0
+      env:
+        RELEASE_BRANCHES: release
+        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        DEFAULT_BUMP: patch
+        WITH_V: true
+        PRERELEASE_SUFFIX: beta
+    - name: Get ECR Login & Save Login into State
+      id: get_ecr_login
+      run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT
+    - name: ECR Push
+      if: ${{ !inputs.vaadin }}
+      id: push
+      env:
+        GITHUB_USERNAME: ${{ secrets.GH_USERNAME }}
+        GITHUB_USER_TOKEN: ${{ secrets.GH_TOKEN }}
+        ENVIRONMENT_ID: staging
+      run: |
+        mvn -U clean compile jib:build \
+        --settings settings.xml \
+        --file pom.xml \
+        -Djib.from.auth.username=AWS \
+        -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
+        -Djib.to.auth.username=AWS \
+        -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
+        -Djib.to.tags=${{ steps.tagging.outputs.new_tag }}
+    - name: ECR Push Vaadin
+      if: ${{ inputs.vaadin }}
+      id: push_with_vaadin
+      env:
+        GITHUB_USERNAME: ${{ secrets.GH_USERNAME }}
+        GITHUB_USER_TOKEN: ${{ secrets.GH_TOKEN }}
+        ENVIRONMENT_ID: staging
+      run: |
+        mvn -U clean compile jib:build \
+        --settings settings.xml \
+        --file pom.xml \
+        -Djib.from.auth.username=AWS \
+        -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
+        -Djib.to.auth.username=AWS \
+        -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
+        -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
+        -Pproduction
+
+
+  Build_Failure:
+    runs-on: ubuntu-latest
+    needs: Build
+    if: ${{ failure() }}
+    steps:
+      - name: Build Failure Notification
+        id: slack_build_failure
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://cyberdog.seatedapp.io/build/fail"
+          method: "POST"
+          data: '{"repository": "${{ github.event.repository.name }}", "user": "${{ github.actor }}", "environment": "STAGING", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}"}'
+          preventFailureOnNoResponse: "true"
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Notification:
+    runs-on: ubuntu-latest
+    needs: Build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: '0'
+      - name: Post to a Slack channel
+        id: slack_deployment_awaits_approval
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://cyberdog.seatedapp.io/deployment/awaits-approval"
+          method: "POST"
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "STAGING", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "version": "${{ needs.Build.outputs.deployment_version }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: "true"
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Primary_Deployment:
+    runs-on: ubuntu-latest
+    needs: Build
+    environment:
+      name: Staging
+      url: https://console.aws.amazon.com/ecs/home?region=us-east-1#/clusters/staging/services/${{ github.event.repository.name }}/deployments
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: '0'
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.SEATED_AWS_PRIMARY_REGION }}
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition --task-definition ${{ github.event.repository.name }}-staging --query taskDefinition > task-definition.json
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ github.event.repository.name }}-staging
+        image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.SEATED_AWS_PRIMARY_REGION }}.amazonaws.com/${{ github.event.repository.name }}-staging:${{ needs.Build.outputs.deployment_version }}
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ github.event.repository.name }}
+        cluster: staging
+        wait-for-service-stability: true
+
+  Deployment_Success:
+    runs-on: ubuntu-latest
+    needs: [Primary_Deployment]
+    if: always() && needs.Primary_Deployment.result == 'success'
+    steps:
+      - name: Post to a Slack channel
+        id: slack_deployment_success
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://cyberdog.seatedapp.io/deployment/success"
+          method: "POST"
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "STAGING", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: "true"
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Deployment_Failure_Or_Rejection:
+    runs-on: ubuntu-latest
+    needs: [Primary_Deployment]
+    if: always() && needs.Primary_Deployment.result == 'failure'
+    steps:
+      - name: Post to a Slack channel
+        id: slack_deployment_fail
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: "https://cyberdog.seatedapp.io/deployment/fail"
+          method: "POST"
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "STAGING", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: "true"
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'

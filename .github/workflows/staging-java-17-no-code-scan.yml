@@ -102,27 +102,8 @@ jobs:
         -Djib.to.auth.username=AWS \
         -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
         -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
-        -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ steps.git-info.outputs.repository_url }},DD_GIT_TAG=${{ steps.git-info.outputs.git_tag }},DD_VERSION=${{ steps.git-info.outputs.git_tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
-        -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ steps.git-info.outputs.repository_url }},git.tag=${{ steps.git-info.outputs.git_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    - name: ECR Push Vaadin
-      if: ${{ inputs.vaadin }}
-      id: push_with_vaadin
-      env:
-        GITHUB_USERNAME: ${{ secrets.GH_USERNAME }}
-        GITHUB_USER_TOKEN: ${{ secrets.GH_TOKEN }}
-        ENVIRONMENT_ID: staging
-      run: |
-        mvn -U clean compile jib:build \
-        --settings settings.xml \
-        --file pom.xml \
-        -Djib.from.auth.username=AWS \
-        -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-        -Djib.to.auth.username=AWS \
-        -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-        -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
-        -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ steps.git-info.outputs.repository_url }},DD_GIT_TAG=${{ steps.git-info.outputs.git_tag }},DD_VERSION=${{ steps.git-info.outputs.git_tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
-        -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ steps.git-info.outputs.repository_url }},git.tag=${{ steps.git-info.outputs.git_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-        -Pproduction
+        -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ github.sha }},DD_GIT_REPOSITORY_URL=${{ github.event.repository.name }},DD_GIT_TAG=${{ steps.tagging.outputs.new_tag }},DD_VERSION=${{ steps.tagging.outputs.new_tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
+        -Djib.container.labels=git.commit.sha=${{ github.sha }},git.repository.url=${{ github.event.repository.name }},git.tag=${{ steps.tagging.outputs.new_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 
   Build_Failure:

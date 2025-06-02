@@ -70,12 +70,11 @@ jobs:
       # Release tag will be generated when commit is pushed to release, X.Y.Z
       - name: Tagging
         id: tagging
-        uses: anothrNick/github-tag-action@1.36.0
+        uses: anothrNick/github-tag-action@1.73.0
         env:
           RELEASE_BRANCHES: release
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           DEFAULT_BUMP: patch
-          WITH_V: true
       - name: Get ECR Login & Save Login into State
         id: get_ecr_login
         run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT
@@ -94,7 +93,7 @@ jobs:
           -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-          -Djib.to.tags=${{ steps.tagging.outputs.tag }}
+          -Djib.to.tags=${{ steps.tagging.outputs.new_tag }}
       - name: ECR Push Vaadin
         if: ${{ inputs.vaadin }}
         id: push_with_vaadin
@@ -110,7 +109,7 @@ jobs:
           -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-          -Djib.to.tags=${{ steps.tagging.outputs.tag }} \
+          -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
           -Pproduction
 
 

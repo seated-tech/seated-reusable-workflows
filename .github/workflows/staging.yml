@@ -78,7 +78,6 @@ jobs:
         RELEASE_BRANCHES: release
         GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         DEFAULT_BUMP: patch
-        TAG_PREFIX: true
         PRERELEASE: true
         PRERELEASE_SUFFIX: ${{ github.event_name == 'pull_request' && 'alpha' || 'beta' }}
     - name: Get ECR Login & Save Login into State

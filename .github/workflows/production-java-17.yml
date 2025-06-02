@@ -70,12 +70,11 @@ jobs:
       # Release tag will be generated when commit is pushed to release, X.Y.Z
       - name: Tagging
         id: tagging
-        uses: anothrNick/github-tag-action@1.36.0
+        uses: anothrNick/github-tag-action@1.73.0
         env:
           RELEASE_BRANCHES: release
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           DEFAULT_BUMP: patch
-          WITH_V: true
       - name: Get ECR Login & Save Login into State
         id: get_ecr_login
         run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT
@@ -94,7 +93,9 @@ jobs:
           -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-          -Djib.to.tags=${{ steps.tagging.outputs.tag }}
+          -Djib.to.tags=${{ steps.tagging.outputs.tag }} \
+          -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ github.event.repository.clone_url }},DD_GIT_TAG=${{ steps.tagging.outputs.new_tag }},DD_VERSION=${{ steps.tagging.outputs.new_tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
+          -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ github.event.repository.clone_url }},git.tag=${{ steps.tagging.outputs.new_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       - name: ECR Push Vaadin
         if: ${{ inputs.vaadin }}
         id: push_with_vaadin
@@ -111,6 +112,8 @@ jobs:
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.tags=${{ steps.tagging.outputs.tag }} \
+          -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ github.event.repository.clone_url }},DD_GIT_TAG=${{ steps.tagging.outputs.new_tag }},DD_VERSION=${{ steps.tagging.outputs.new_tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=staging \
+          -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ github.event.repository.clone_url }},git.tag=${{ steps.tagging.outputs.new_tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
           -Pproduction
 
 

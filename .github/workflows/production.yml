@@ -93,7 +93,9 @@ jobs:
           -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-          -Djib.to.tags=${{ steps.tagging.outputs.new_tag }}
+          -Djib.to.tags=${{ steps.tagging.outputs.tag }} \
+          -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ github.event.repository.clone_url }},DD_GIT_TAG=${{ steps.tagging.outputs.tag }},DD_VERSION=${{ steps.tagging.outputs.tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=production \
+          -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ github.event.repository.clone_url }},git.tag=${{ steps.tagging.outputs.tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       - name: ECR Push Vaadin
         if: ${{ inputs.vaadin }}
         id: push_with_vaadin
@@ -109,7 +111,9 @@ jobs:
           -Djib.from.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
           -Djib.to.auth.username=AWS \
           -Djib.to.auth.password=${{ steps.get_ecr_login.outputs.ecr_login }} \
-          -Djib.to.tags=${{ steps.tagging.outputs.new_tag }} \
+          -Djib.to.tags=${{ steps.tagging.outputs.tag }} \
+          -Djib.container.environment=DD_GIT_COMMIT_SHA=${{ steps.git-info.outputs.commit_sha }},DD_GIT_REPOSITORY_URL=${{ github.event.repository.clone_url }},DD_GIT_TAG=${{ steps.tagging.outputs.tag }},DD_VERSION=${{ steps.tagging.outputs.tag }},DD_SERVICE=${{ github.event.repository.name }},DD_ENV=production \
+          -Djib.container.labels=git.commit.sha=${{ steps.git-info.outputs.commit_sha }},git.repository.url=${{ github.event.repository.clone_url }},git.tag=${{ steps.tagging.outputs.tag }},build.time=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
           -Pproduction
 
 

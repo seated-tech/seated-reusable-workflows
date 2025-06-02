@@ -39,7 +39,7 @@ jobs:
         preventFailureOnNoResponse: "true"
         customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: '0'
     - name: Set up Node.js 16

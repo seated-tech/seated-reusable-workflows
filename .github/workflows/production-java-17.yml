@@ -41,7 +41,7 @@ jobs:
           preventFailureOnNoResponse: "true"
           customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: '0'
       - name: Set up Node.js 16
@@ -54,6 +54,11 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
           cache: 'maven'
+      - name: Get correct commit SHA
+        id: git-info
+        run: |
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "merge_commit_sha=${{ github.sha }}" >> $GITHUB_OUTPUT
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:

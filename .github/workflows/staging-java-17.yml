@@ -70,16 +70,16 @@ jobs:
         GITHUB_USER_TOKEN: ${{ secrets.GH_TOKEN }}
         ENVIRONMENT_ID: staging
       run: mvn --settings settings.xml test
-    # Staging tag will be generated when commit is pushed to master, X.Y.Z-beta
+    # Alpha tag for PRs against master, beta tag for merges into master
     - name: Tagging
       id: tagging
-      uses: anothrNick/github-tag-action@1.36.0
+      uses: anothrNick/github-tag-action@1.73.0
       env:
         RELEASE_BRANCHES: release
         GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         DEFAULT_BUMP: patch
         WITH_V: true
-        PRERELEASE_SUFFIX: beta
+        PRERELEASE_SUFFIX: ${{ github.event_name == 'pull_request' && 'alpha' || 'beta' }}
     - name: Get ECR Login & Save Login into State
       id: get_ecr_login
       run: echo name=ecr_login::\"$(aws ecr get-login-password)\" >> $GITHUB_OUTPUT

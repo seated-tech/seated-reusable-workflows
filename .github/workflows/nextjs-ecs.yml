@@ -1,0 +1,429 @@
+name: Next.js ECS CI/CD
+
+# One reusable pipeline for every Next.js app Seated deploys to ECS Fargate:
+# seated-web, restaurant-portal, seated-lab. Test -> Build -> gated Deploy, with
+# cyberdog Slack notifications at each stage.
+#
+# Deliberately ONE file parameterised by `environment`, not the staging.yml /
+# production.yml / uat.yml split the Java workflows use. Those three are ~95%
+# identical and have already drifted apart from each other; the only real
+# per-environment differences are the trigger (which has to live in the caller
+# anyway), the cluster, the image tag suffix and the approval gate. All four are
+# inputs here.
+#
+# Callers keep a thin .github/workflows/staging.yml and production.yml that own
+# the trigger and call this. See docs/nextjs-ecs.md for copy-paste callers.
+#
+# Naming defaults, all overridable, and all derived from the CALLER's repo name:
+#   ECR repository        <repo>-<environment>
+#   task definition       <repo>-<environment>
+#   ECS cluster           <environment>
+#   ECS service           <repo>
+#   container name        <repo>            <- NOT env-suffixed; see container_name
+#
+# Secrets are declared explicitly rather than relying on `secrets: inherit`, so a
+# missing one is a clear error at the call site instead of an empty string that
+# silently produces a broken image. It also lets a caller map an env-specific
+# secret onto a generic name (restaurant-portal's
+# NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY_STAGING -> NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY).
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'staging | production | uat. Drives cluster, image tag suffix and the approval gate.'
+        required: true
+        type: string
+
+      # ---- Test job -------------------------------------------------------
+      run_tests:
+        description: 'Run the Test job before building. Set false for repos with no suite yet.'
+        required: false
+        default: true
+        type: boolean
+      node_version:
+        description: 'Node version for the Test job. The image build uses the Dockerfile FROM, not this.'
+        required: false
+        default: '22'
+        type: string
+      test_commands:
+        description: 'Newline-separated commands run in order in the Test job.'
+        required: false
+        default: |
+          npm run lint
+          npm run typecheck
+          npm run test
+        type: string
+      install_playwright:
+        description: 'Install Playwright + chromium before e2e_command.'
+        required: false
+        default: false
+        type: boolean
+      e2e_command:
+        description: 'Command run after install_playwright. Empty to skip.'
+        required: false
+        default: ''
+        type: string
+
+      # ---- Build job ------------------------------------------------------
+      build_args:
+        description: |
+          Newline-separated NON-SECRET docker --build-arg pairs, e.g.
+            APP_ENV=staging
+            NEXTAUTH_URL=https://lab.staging.seatedapp.io
+          VERSION is added automatically from the computed tag. Secret-valued
+          build args go through the optional secrets below instead, so their
+          values are masked and never appear in an input.
+        required: false
+        default: ''
+        type: string
+      required_build_secrets:
+        description: |
+          Newline-separated names of the optional secrets below that MUST be
+          non-empty. Fails fast before the build instead of shipping an image
+          with a broken map or payment form. Generalises restaurant-portal's
+          "Verify required build secrets" step.
+        required: false
+        default: ''
+        type: string
+      skip_dependabot:
+        description: |
+          Skip Build/Deploy on dependabot PRs. GitHub withholds secrets from
+          dependabot-triggered pull_request runs, so the build would fail on
+          empty AWS credentials and report as a real failure. Tests still run.
+        required: false
+        default: true
+        type: boolean
+
+      # ---- Naming overrides ----------------------------------------------
+      ecr_repository:
+        description: 'Default: <repo>-<environment>'
+        required: false
+        default: ''
+        type: string
+      task_definition_family:
+        description: 'Default: <repo>-<environment>'
+        required: false
+        default: ''
+        type: string
+      ecs_cluster:
+        description: 'Default: <environment>'
+        required: false
+        default: ''
+        type: string
+      ecs_service:
+        description: 'Default: <repo>'
+        required: false
+        default: ''
+        type: string
+      container_name:
+        description: |
+          Container to swap the image on inside the task definition.
+          Default <repo>, which is what the seated-terraform web-services module
+          produces (fargate/task-definition-web.tf sets `name = each.value.name`,
+          with `datadog-agent` and `log_router` alongside it). The env-suffixed
+          form used by the Java workflows does NOT match these task definitions
+          and fails with "Container <repo>-<env> is not defined in the task
+          definition" before anything deploys.
+        required: false
+        default: ''
+        type: string
+      gh_environment:
+        description: |
+          GitHub Environment holding the required reviewers for the deploy gate.
+          Default: the capitalised `environment` input (Staging / Production / Uat).
+        required: false
+        default: ''
+        type: string
+      aws_region:
+        description: 'Default: us-east-1'
+        required: false
+        default: 'us-east-1'
+        type: string
+      wait_for_service_stability:
+        description: 'Block the deploy job until ECS reports steady state.'
+        required: false
+        default: true
+        type: boolean
+
+      # ---- Notifications --------------------------------------------------
+      notify:
+        description: 'Post build/deploy status to cyberdog. Skipped anyway if CYBERDOG_CICD_AUTH is unset.'
+        required: false
+        default: true
+        type: boolean
+
+    secrets:
+      AWS_ACCOUNT_ID:
+        required: true
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      GH_TOKEN:
+        description: 'Used by the tagging action to push the version tag.'
+        required: true
+      CYBERDOG_CICD_AUTH:
+        description: 'Authorization header for cyberdog.seatedapp.io. Notifications are skipped when absent.'
+        required: false
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY:
+        required: false
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:
+        required: false
+      GOOGLE_OAUTH_CLIENT_ID:
+        required: false
+      GOOGLE_OAUTH_CLIENT_SECRET:
+        required: false
+
+jobs:
+  Test:
+    if: ${{ inputs.run_tests }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+      - run: npm ci
+      - name: Test commands
+        env:
+          TEST_COMMANDS: ${{ inputs.test_commands }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r cmd; do
+            [ -z "${cmd// }" ] && continue
+            echo "::group::$cmd"
+            eval "$cmd"
+            echo "::endgroup::"
+          done <<< "$TEST_COMMANDS"
+      - name: Install Playwright
+        if: ${{ inputs.install_playwright && inputs.e2e_command != '' }}
+        run: npx playwright install --with-deps chromium
+      - name: E2E
+        if: ${{ inputs.e2e_command != '' }}
+        run: ${{ inputs.e2e_command }}
+
+  Build:
+    runs-on: ubuntu-latest
+    needs: [Test]
+    # !cancelled() so Build still runs when run_tests is false and Test is
+    # skipped; the result check keeps a genuine test failure fatal.
+    if: |
+      !cancelled()
+      && (needs.Test.result == 'success' || needs.Test.result == 'skipped')
+      && !(inputs.skip_dependabot && github.actor == 'dependabot[bot]')
+    outputs:
+      deployment_version: ${{ steps.tagging.outputs.new_tag }}
+    env:
+      ECR_REPOSITORY: ${{ inputs.ecr_repository != '' && inputs.ecr_repository || format('{0}-{1}', github.event.repository.name, inputs.environment) }}
+      # `secrets` is not available in a step-level `if`, but it is in job-level
+      # `env`, so the "is cyberdog configured" test is resolved here once.
+      NOTIFY: ${{ inputs.notify && secrets.CYBERDOG_CICD_AUTH != '' }}
+    steps:
+      - name: Notify build started
+        if: ${{ env.NOTIFY == 'true' }}
+        continue-on-error: true
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://cyberdog.seatedapp.io/build/init'
+          method: 'POST'
+          data: '{"repository": "${{ github.event.repository.name }}", "user": "${{ github.actor }}", "environment": "${{ inputs.environment }}", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}"}'
+          preventFailureOnNoResponse: 'true'
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: '0'
+
+      - name: Verify required build secrets
+        if: ${{ inputs.required_build_secrets != '' }}
+        env:
+          REQUIRED: ${{ inputs.required_build_secrets }}
+          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r name; do
+            [ -z "${name// }" ] && continue
+            name="$(echo "$name" | tr -d '[:space:]')"
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required build secret $name is empty. It would be baked into the image as an empty string."
+              missing=1
+            fi
+          done <<< "$REQUIRED"
+          [ "$missing" -eq 0 ]
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Alpha for PRs, beta for pushes to the default branch, so a PR build
+      # cannot claim the tag a merge will want.
+      - name: Tagging
+        id: tagging
+        uses: anothrNick/github-tag-action@1.73.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          RELEASE_BRANCHES: release
+          DEFAULT_BUMP: patch
+          WITH_V: true
+          PRERELEASE: true
+          PRERELEASE_SUFFIX: ${{ github.event_name == 'pull_request' && 'alpha' || 'beta' }}
+
+      - name: Build and tag the image
+        env:
+          IMAGE: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+          VERSION: ${{ steps.tagging.outputs.new_tag }}
+          BUILD_ARGS: ${{ inputs.build_args }}
+          # Passed through by name below, so the values never appear in a command line.
+          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          args=(--build-arg "VERSION=$VERSION")
+
+          # Non-secret pairs from the caller.
+          while IFS= read -r pair; do
+            [ -z "${pair// }" ] && continue
+            args+=(--build-arg "$pair")
+          done <<< "$BUILD_ARGS"
+
+          # Secret-valued args: `--build-arg NAME` with no `=` makes docker read
+          # the value from the environment, so it is never in argv or the log.
+          for name in NEXT_PUBLIC_GOOGLE_MAPS_API_KEY NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY \
+                      GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET; do
+            if [ -n "${!name:-}" ]; then
+              args+=(--build-arg "$name")
+            fi
+          done
+
+          docker build "${args[@]}" -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./
+
+      - name: ECR Push
+        env:
+          IMAGE: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+        run: docker push --all-tags "$IMAGE"
+
+  Build_Failure:
+    runs-on: ubuntu-latest
+    env:
+      NOTIFY: ${{ inputs.notify && secrets.CYBERDOG_CICD_AUTH != '' }}
+    needs: [Build]
+    if: ${{ always() && needs.Build.result == 'failure' && inputs.notify }}
+    steps:
+      - name: Notify build failed
+        if: ${{ env.NOTIFY == 'true' }}
+        continue-on-error: true
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://cyberdog.seatedapp.io/build/fail'
+          method: 'POST'
+          data: '{"repository": "${{ github.event.repository.name }}", "user": "${{ github.actor }}", "environment": "${{ inputs.environment }}", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}"}'
+          preventFailureOnNoResponse: 'true'
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Awaiting_Approval:
+    runs-on: ubuntu-latest
+    env:
+      NOTIFY: ${{ inputs.notify && secrets.CYBERDOG_CICD_AUTH != '' }}
+    needs: [Build]
+    if: ${{ needs.Build.result == 'success' && inputs.notify }}
+    steps:
+      - name: Notify deploy awaits approval
+        if: ${{ env.NOTIFY == 'true' }}
+        continue-on-error: true
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://cyberdog.seatedapp.io/deployment/awaits-approval'
+          method: 'POST'
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "${{ inputs.environment }}", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "version": "${{ needs.Build.outputs.deployment_version }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: 'true'
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Deploy:
+    runs-on: ubuntu-latest
+    needs: [Build]
+    environment:
+      name: ${{ inputs.gh_environment != '' && inputs.gh_environment || (inputs.environment == 'staging' && 'Staging' || inputs.environment == 'production' && 'Production' || 'Uat') }}
+      url: https://console.aws.amazon.com/ecs/home?region=${{ inputs.aws_region }}#/clusters/${{ inputs.ecs_cluster != '' && inputs.ecs_cluster || inputs.environment }}/services/${{ inputs.ecs_service != '' && inputs.ecs_service || github.event.repository.name }}/deployments
+    env:
+      TASK_DEFINITION_FAMILY: ${{ inputs.task_definition_family != '' && inputs.task_definition_family || format('{0}-{1}', github.event.repository.name, inputs.environment) }}
+      ECR_REPOSITORY: ${{ inputs.ecr_repository != '' && inputs.ecr_repository || format('{0}-{1}', github.event.repository.name, inputs.environment) }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEFINITION_FAMILY" \
+            --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ inputs.container_name != '' && inputs.container_name || github.event.repository.name }}
+          image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ needs.Build.outputs.deployment_version }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ inputs.ecs_service != '' && inputs.ecs_service || github.event.repository.name }}
+          cluster: ${{ inputs.ecs_cluster != '' && inputs.ecs_cluster || inputs.environment }}
+          wait-for-service-stability: ${{ inputs.wait_for_service_stability }}
+
+  Deployment_Success:
+    runs-on: ubuntu-latest
+    env:
+      NOTIFY: ${{ inputs.notify && secrets.CYBERDOG_CICD_AUTH != '' }}
+    needs: [Build, Deploy]
+    if: ${{ always() && needs.Deploy.result == 'success' && inputs.notify }}
+    steps:
+      - name: Notify deploy succeeded
+        if: ${{ env.NOTIFY == 'true' }}
+        continue-on-error: true
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://cyberdog.seatedapp.io/deployment/success'
+          method: 'POST'
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "${{ inputs.environment }}", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "version": "${{ needs.Build.outputs.deployment_version }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: 'true'
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'
+
+  Deployment_Failure_Or_Rejection:
+    runs-on: ubuntu-latest
+    env:
+      NOTIFY: ${{ inputs.notify && secrets.CYBERDOG_CICD_AUTH != '' }}
+    needs: [Build, Deploy]
+    if: ${{ always() && (needs.Deploy.result == 'failure' || needs.Deploy.result == 'cancelled') && inputs.notify }}
+    steps:
+      - name: Notify deploy failed or was rejected
+        if: ${{ env.NOTIFY == 'true' }}
+        continue-on-error: true
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://cyberdog.seatedapp.io/deployment/fail'
+          method: 'POST'
+          data: '{"repository": "${{ github.event.repository.name }}", "repositoryFullName": "${{ github.repository }}", "user": "${{ github.actor }}", "environment": "${{ inputs.environment }}", "runId": "${{ github.run_id }}", "runAttempt": "${{ github.run_attempt }}", "reference": "${{ github.ref }}", "version": "${{ needs.Build.outputs.deployment_version }}", "commitSHA": "${{ github.sha }}"}'
+          preventFailureOnNoResponse: 'true'
+          customHeaders: '{"Authorization": "${{ secrets.CYBERDOG_CICD_AUTH }}"}'

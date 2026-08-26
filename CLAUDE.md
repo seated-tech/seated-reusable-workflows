@@ -13,6 +13,16 @@ This repository contains reusable GitHub Actions workflows for Seated's deployme
 
 ### Workflow Types
 
+0. **Next.js ECS Workflow** (`nextjs-ecs.yml`)
+   - The shared pipeline for every Next.js app on ECS Fargate: seated-web,
+     restaurant-portal, seated-lab
+   - ONE file parameterised by an `environment` input, not a per-environment split
+   - Test (lint/typecheck/unit/e2e) → Build (docker + ECR) → gated Deploy (ECS)
+   - Full reference and copy-paste callers: `docs/nextjs-ecs.md`
+   - Note its `container_name` default is `<repo>`, NOT `<repo>-<env>`. The
+     web-services terraform module does not env-suffix the container name; the
+     Java workflows' suffixed form fails these task definitions outright.
+
 1. **ECS Deployment Workflows** (staging.yml, production.yml, and Java-17 variants)
    - Build Java applications using Maven and Jib
    - Deploy Docker containers to AWS ECS
